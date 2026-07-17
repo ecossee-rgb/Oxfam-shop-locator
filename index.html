@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shop locator — Oxfam Belgique</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{ --ob:#2e7d32; --mdm:#e70052; --bg:#fff; --txt:#1a1a1a; --muted:#6b6b6b; --line:#e6e6e6; }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--txt);}
+  #map{position:absolute; inset:0;}
+  #panel{
+    position:absolute; z-index:1000; top:12px; left:12px; bottom:12px; width:360px; max-width:calc(100% - 24px);
+    background:var(--bg); border-radius:14px; box-shadow:0 4px 24px rgba(0,0,0,.18);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  header{padding:14px 16px 10px; border-bottom:1px solid var(--line);}
+  header h1{font-size:17px; font-weight:700;}
+  header p{font-size:12px; color:var(--muted); margin-top:2px;}
+  .controls{padding:10px 16px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:8px;}
+  .row{display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
+  #q{flex:1; padding:8px 10px; border:1px solid #ccc; border-radius:8px; font-size:14px; min-width:0;}
+  #locbtn{padding:8px 10px; border:1px solid #ccc; background:#f7f7f7; border-radius:8px; cursor:pointer; font-size:13px; white-space:nowrap;}
+  #locbtn:hover{background:#efefef;}
+  .chip{display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; border:1.5px solid var(--line); font-size:12px; cursor:pointer; user-select:none; background:#fafafa;}
+  .chip input{accent-color:#333; cursor:pointer;}
+  .chip .dot{width:9px; height:9px; border-radius:50%;}
+  .chip[data-k="ob"] .dot{background:var(--ob);} .chip[data-k="mdm"] .dot{background:var(--mdm);}
+  .typechip.active{background:#333; color:#fff; border-color:#333;}
+  #count{font-size:12px; color:var(--muted);}
+  #list{flex:1; overflow-y:auto;}
+  .item{padding:10px 16px; border-bottom:1px solid var(--line); cursor:pointer;}
+  .item:hover{background:#f6f6f6;}
+  .item .nm{font-size:14px; font-weight:600; display:flex; align-items:center; gap:7px;}
+  .item .nm .dot{width:9px; height:9px; border-radius:50%; flex:none;}
+  .item .ad{font-size:12px; color:var(--muted); margin-top:2px;}
+  .item .dist{font-size:11px; color:#0a66c2; margin-top:2px;}
+  .badges{margin-top:4px; display:flex; gap:4px; flex-wrap:wrap;}
+  .b{font-size:10px; padding:2px 7px; border-radius:999px; background:#eee; color:#444;}
+  .b.sm{background:#fde8ef; color:#a3003a;} .b.ce{background:#e6f3e6; color:#1d5c20;}
+  footer{padding:8px 16px; font-size:10.5px; color:var(--muted); border-top:1px solid var(--line); line-height:1.5;}
+  footer a{color:inherit;}
+  .popup .pn{font-weight:700; font-size:14px; margin-bottom:3px;}
+  .popup .pa{font-size:12.5px; color:#444; margin:3px 0 6px; white-space:pre-line;}
+  .popup a{font-size:12.5px; color:#0a66c2; text-decoration:none; display:inline-block; margin-right:10px;}
+  @media (max-width:640px){
+    #panel{top:auto; left:0; bottom:0; width:100%; max-width:100%; height:55%; border-radius:14px 14px 0 0;}
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <header>
+    <h1>Trouver un magasin Oxfam</h1>
+    <p>Magasins de seconde main — Oxfam België &amp; Oxfam-Magasins du monde</p>
+  </header>
+  <div class="controls">
+    <div class="row">
+      <input id="q" type="search" placeholder="Ville, code postal, nom…">
+      <button id="locbtn" title="Trier par distance depuis ma position">📍 Près de moi</button>
+    </div>
+    <div class="row">
+      <label class="chip" data-k="ob"><input type="checkbox" id="f-ob" checked><span class="dot"></span>Oxfam België · 2ᵉ main</label>
+      <label class="chip" data-k="mdm"><input type="checkbox" id="f-mdm" checked><span class="dot"></span>Magasins du monde</label>
+    </div>
+    <div class="row"><span id="count"></span></div>
+  </div>
+  <div id="list"></div>
+  <footer>
+    Sources : <a href="https://oxfambelgie.be/shop-finder" target="_blank">oxfambelgie.be</a> &amp;
+    <a href="https://oxfammagasinsdumonde.be/magasins-du-monde-oxfam/" target="_blank">oxfammagasinsdumonde.be</a> (16/07/2026).
+    Géocodage : © contributeurs OpenStreetMap / Nominatim.
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// DONNÉES
+// r: réseau ('ob' = Oxfam België seconde main, 'mdm' = Oxfam-Magasins du monde)
+// t: types ('sm' seconde main, 'ce' commerce équitable)
+// ---------------------------------------------------------------------------
+const OB_BASE = 'https://oxfambelgie.be';
+const MDM_BASE = 'https://oxfammagasinsdumonde.be/magasins/';
+
+const OB = [
+ ["Oxfam Seconde Main Dinant","Rue Grande 149, 5500 Dinant",50.260284,4.913132,"/winkels/dinant-2H"],
+ ["Oxfam Tweedehands Leuven","Diestestraat 196, 3000 Leuven",50.881741,4.711859,"/winkels/oxfam-tweedehands-leuven"],
+ ["Oxfam Tweedehands Gent","Steendam 73, 9000 Gent",51.057193,3.731207,"/winkels/gent-steendam-2H"],
+ ["Oxfam Tweedehands Wilrijk","Jules Moretuslei 157, 2610 Wilrijk",51.172625,4.389198,"/winkels/wilrijk-2H"],
+ ["Oxfam Tweedehands Oostende","Torhoutsesteenweg 601, 8400 Oostende",51.203123,2.902960,"/winkels/oostende-2H"],
+ ["Oxfam Tweedehands Antwerpen - Koepoort","Lange Koepoortstraat 49A, 2000 Antwerpen",51.222347,4.402658,"/winkels/oxfam-tweedehands-antwerpen-koepoort"],
+ ["Oxfam Seconde Main Ciney","Rue Saint-Gilles 61, 5590 Ciney",50.309723,5.120983,"/winkels/ciney-2H"],
+ ["Oxfam Seconde Main Bruxelles Schaerbeek","Avenue de la Brabançonne 133, 1030 Schaerbeek",50.851293,4.387229,"/winkels/schaarbeek-2H"],
+ ["Oxfam Tweedehands Halle","Volpestraat 12, 1500 Halle",50.736291,4.235247,"/winkels/oxfam-tweedehands-halle"],
+ ["Oxfam Tweedehands Bookshop Leuven","Parijsstraat 60, 3000 Leuven",50.877547,4.698277,"/winkels/BS-leuven-2H"],
+ ["Oxfam Seconde Main Liège Casquette","Rue de la Casquette 19b, 4000 Liège",50.642365,5.568930,"/winkels/luik-casquette-2H"],
+ ["Oxfam Tweedehands Bookshop Antwerpen","Quellinstraat 28, 2018 Antwerpen",51.216584,4.415999,"/winkels/BS-antwerpen-2H"],
+ ["Oxfam Bookshop Bruxelles Uccle","Rue Vanderkindere 248, 1180 Uccle",50.814227,4.350657,"/winkels/BS-ukkel-2M"],
+ ["Oxfam Tweedehands Knokke-Heist","Gemeenteplein 4, 8300 Knokke-Heist",51.340890,3.289514,"/winkels/oxfam-tweedehands-knokke-heist"],
+ ["Oxfam Bookshop Namur","Bas de la Place 12-14, 5000 Namur",50.462997,4.868879,"/winkels/BS-namen-2H"],
+ ["Oxfam Seconde Main Fléron","Avenue des Martyrs 228, 4620 Fléron",50.614494,5.682038,"/winkels/fleron-2H"],
+ ["Oxfam Seconde Main Bruxelles Jette","Rue Auguste Hainaut 9, 1090 Jette",50.868466,4.336266,"/winkels/jette-2H"],
+ ["Oxfam Bookshop-Computershop Mons","Rue de Houdain 5, 7000 Mons",50.452188,3.953655,"/winkels/bergen-2H"],
+ ["Oxfam Seconde Main Namur Bomel","Rue de Bomel 9, 5000 Namur",50.470994,4.865861,"/winkels/namen-bomel-2H"],
+ ["Oxfam Bookshop Bruxelles Ixelles","Chaussée d'Ixelles 254, 1050 Ixelles",50.830241,4.369542,"/winkels/BS-elsene-2H"],
+ ["Oxfam Tweedehands Antwerpen Brederode","Brederodestraat 27, 2018 Antwerpen",51.206179,4.396726,"/winkels/antwerpen-brederode-2H"],
+ ["Oxfam Seconde Main Mons","Grand Rue 28, 7000 Mons",50.451674,3.949589,"/winkels/oxfam-tweedehands-bergen"],
+ ["Oxfam Seconde Main Herstal","Boulevard Zénobe Gramme 120, 4040 Herstal",50.660651,5.628934,"/winkels/herstal-2H"],
+ ["Oxfam Tweedehands Bookshop Kortrijk","Budastraat 21, 8500 Kortrijk",50.830233,3.263285,"/winkels/BS-kortrijk-2H"],
+ ["Oxfam Seconde Main Nivelles","Rue de Namur 43, 1400 Nivelles",50.598838,4.326201,"/winkels/nijvel-2H"],
+ ["Oxfam Seconde Main Bruxelles Vintage","Rue de Flandre 88-90, 1000 Bruxelles",50.852192,4.345946,"/winkels/brussel-2H"],
+ ["Oxfam Tweedehands Vilvoorde","Leuvensestraat 59, 1800 Vilvoorde",50.928238,4.427495,"/winkels/oxfam-tweedehands-vilvoorde"],
+ ["Oxfam Tweedehands Brugge","Smedenstraat 33, 8000 Brugge",51.205471,3.215114,"/winkels/brugge-2H"],
+ ["Oxfam Tweedehands Mechelen","Onze Lieve Vrouwestraat 53, 2800 Mechelen",51.024014,4.478503,"/winkels/mechelen-2H"],
+ ["Oxfam Tweedehands Bookshop Gent","Sint-Amandstraat 16, 9000 Gent",51.043793,3.724372,"/winkels/BS-gent-2H"],
+ ["Oxfam Seconde Main Herstal Laixheau","Place Laixheau 7, 4040 Herstal",50.667988,5.625618,"/winkels/oxfam-tweedehands-herstal-laixheau"],
+ ["Oxfam Seconde Main Marcinelle","Avenue de Philippeville 290-292, 6001 Marcinelle",50.394381,4.456490,"/winkels/marcinelle"],
+ ["Oxfam Seconde Main Liège Outre-Meuse","Rue Puits-en-Sock 137, 4020 Liège",50.638853,5.586050,"/winkels/luik-outre-meuse-2H"],
+ ["Oxfam Bookshop Liège","Rue Saint-Gilles 29, 4000 Liège",50.642645,5.567599,"/winkels/BS-luik-2H"],
+ ["Oxfam Tweedehands Aalst","Lange Zoutstraat 49, 9300 Aalst",50.936760,4.039575,"/winkels/oxfam-tweedehands-aalst"],
+ ["RE:BEL Liège (Oxfam)","Féronstrée 49-53, 4000 Liège",50.646408,5.579044,"/winkels/REBEL-luik"],
+ ["Oxfam Computershop Bruxelles","Chaussée d'Ixelles 252, 1050 Ixelles",50.830289,4.369505,"/winkels/CS-elsene-2H"],
+ ["Oxfam Seconde Main Bruxelles Marolles","Rue Haute 214, 1000 Bruxelles",50.837254,4.349070,"/winkels/marollen-2H"],
+ ["Oxfam Seconde Main Charleroi","Rue de la Montagne 9, 6000 Charleroi",50.409151,4.442449,"/winkels/oxfam-tweedehands-charleroi"]
+].map(x => ({n:x[0], a:x[1], la:x[2], lo:x[3], u:OB_BASE+x[4], r:'ob', t:['sm']}));
+
+const MDM = [
+ ["Anderlecht","Rue Saint-Guidon 13, Anderlecht",50.835632,4.305595,"anderlecht","ce,sm","Commerce équitable et livres de seconde main"],
+ ["Etterbeek","Rue de Pervyse 68, Etterbeek",50.830685,4.399760,"etterbeek","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Ixelles-Boondael","Avenue Brillat-Savarin 18, Ixelles",50.817011,4.387679,"ixelles-boondael","ce,sm","Vêtements de seconde main et épicerie équitable"],
+ ["Schaerbeek","Place d'Helmet 2, Schaerbeek",50.872840,4.389410,"schaerbeek","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Jodoigne (seconde main)","Grand-Place 33, Jodoigne",50.724640,4.867867,"jodoigne-seconde-main","sm","Vêtements de seconde main"],
+ ["Wavre (seconde main)","Chaussée de Bruxelles 40-42, Wavre",50.720001,4.610884,"wavre-seconde-main","sm","Vêtements de seconde main"],
+ ["Ath","Rue Hennepin 2, Ath",50.630192,3.779793,"ath","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Charleroi (seconde main)","Rue de Montigny 70, Charleroi",50.407809,4.446764,"charleroi-seconde-main","sm","Seconde main"],
+ ["Gilly","Chaussée de Lodelinsart 198, Gilly (Charleroi)",50.427587,4.472667,"gilly","ce,sm","Vêtements de seconde main et épicerie équitable"],
+ ["Jemappes","Place de Jemappes 10, Jemappes (Mons)",50.448363,3.888914,"jemappes","ce,sm","Seconde main, fins de série et épicerie équitable"],
+ ["La Louvière","Rue de la Loi 54, La Louvière",50.478180,4.186280,"la-louviere","ce,sm","Seconde main, fins de série et épicerie équitable"],
+ ["Mouscron","Rue de Courtrai 32, Mouscron",50.745095,3.217215,"mouscron","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Soignies","Place Van Zeeland, Soignies",50.578428,4.068679,"soignies","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Thuin","Rue t'Serstevens 50, Thuin",50.341319,4.284226,"thuin","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Embourg","Voie de l'Ardenne 68, Embourg",50.592531,5.605944,"embourg","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Liège (seconde main)","Rue Charles Magnette 8, Liège",50.641030,5.573615,"liege-seconde-main","sm","Vêtements seconde main femmes & hommes"],
+ ["Verviers Ensival","En Mi-Ville 5b, Ensival (Verviers)",50.581535,5.840032,"verviers-seconde-main","ce,sm","Vêtements de seconde main et épicerie équitable"],
+ ["Visé (seconde main)","Rue des Écoles 6, Visé",50.738313,5.684674,"vise-seconde-main","ce,sm","Vêtements de seconde main et épicerie équitable"],
+ ["Waremme","Avenue Reine Astrid 42, Waremme",50.695163,5.250430,"waremme","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Arlon (seconde main)","Rue du Marché-au-Beurre 3, Arlon",49.683516,5.815039,"arlon-seconde-main","sm","Vêtements et livres de seconde main"],
+ ["Athus","Grand-Rue 81, Athus",49.562566,5.836605,"athus","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Bastogne","Rue de La Roche 5, Bastogne",50.007372,5.718764,"bastogne","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Bertrix","Rue de la Gare 59, Bertrix",49.854920,5.257294,"bertrix","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Virton","Rue de la Roche 3, Virton",49.568345,5.531998,"virton","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Andenne","Rue du Commerce 8, Andenne",50.490105,5.097069,"andenne","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Ciney","Rue Edouard Dinot 10, Ciney",50.293952,5.099587,"ciney","ce,sm","Seconde main, fins de série et épicerie équitable"],
+ ["Gembloux","Rue Léopold 17-19, Gembloux",50.560096,4.692252,"gembloux","ce,sm","Commerce équitable et vêtements de seconde main"],
+ ["Namur Centre","Rue des Carmes 36, Namur",50.466283,4.863966,"namur-centre","sm","Vêtements de seconde main"],
+ ["Rochefort","Avenue de Forest 5, Rochefort",50.158203,5.222553,"rochefort","ce,sm","Commerce équitable et vêtements de seconde main"]
+].map(x => ({n:'Oxfam-Magasins du monde '+x[0], a:x[1], la:x[2], lo:x[3], u:MDM_BASE+x[4]+'/', r:'mdm', t:x[5].split(','), d:x[6]}));
+
+const SHOPS = OB.concat(MDM);
+
+// ---------------------------------------------------------------------------
+// CARTE
+// ---------------------------------------------------------------------------
+const map = L.map('map', {zoomControl:false}).setView([50.60, 4.65], 8);
+L.control.zoom({position:'topright'}).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19,
+  subdomains: 'abcd',
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+}).addTo(map);
+
+const COLORS = {ob:'#2e7d32', mdm:'#e70052'};
+const TL = {sm:'Seconde main', ce:'Commerce équitable'};
+
+function popupHtml(s){
+  const badges = s.t.map(t=>`<span class="b ${t}">${TL[t]}</span>`).join(' ');
+  const gm = `https://www.google.com/maps/dir/?api=1&destination=${s.la},${s.lo}`;
+  return `<div class="popup">
+    <div class="pn">${s.n}</div>
+    <div class="badges">${badges}</div>
+    <div class="pa">${s.d ? s.d+'\n' : ''}${s.a}</div>
+    <a href="${s.u}" target="_blank">Fiche magasin ↗</a>
+    <a href="${gm}" target="_blank">Itinéraire ↗</a>
+  </div>`;
+}
+
+SHOPS.forEach(s => {
+  s.marker = L.circleMarker([s.la, s.lo], {
+    radius:8, color:'#fff', weight:2, fillColor:COLORS[s.r], fillOpacity:.95
+  }).bindPopup(popupHtml(s));
+});
+
+// ---------------------------------------------------------------------------
+// FILTRES + LISTE
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+let typeFilter = '';
+let userPos = null;
+
+const norm = t => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+
+function dist(a,b,c,d){ // km, haversine
+  const r=Math.PI/180, R=6371;
+  const x=Math.sin((c-a)*r/2)**2 + Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;
+  return 2*R*Math.asin(Math.sqrt(x));
+}
+
+function apply(){
+  const q = norm($('q').value.trim());
+  const showOb = $('f-ob').checked, showMdm = $('f-mdm').checked;
+  const visible = SHOPS.filter(s =>
+    (s.r==='ob' ? showOb : showMdm) &&
+    (!typeFilter || s.t.includes(typeFilter)) &&
+    (!q || norm(s.n+' '+s.a).includes(q))
+  );
+  if(userPos) visible.forEach(s => s.km = dist(userPos[0],userPos[1],s.la,s.lo));
+  visible.sort(userPos ? (a,b)=>a.km-b.km : (a,b)=>a.n.localeCompare(b.n,'fr'));
+
+  SHOPS.forEach(s => { if(!visible.includes(s)) map.removeLayer(s.marker); });
+  visible.forEach(s => s.marker.addTo(map));
+
+  $('count').textContent = visible.length + ' magasin' + (visible.length>1?'s':'');
+  const list = $('list');
+  list.innerHTML = '';
+  visible.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'item';
+    div.innerHTML = `<div class="nm"><span class="dot" style="background:${COLORS[s.r]}"></span>${s.n}</div>
+      <div class="ad">${s.a}</div>
+      ${(s.km!=null && userPos) ? `<div class="dist">${s.km<10?s.km.toFixed(1):Math.round(s.km)} km</div>` : ''}
+      <div class="badges">${s.t.map(t=>`<span class="b ${t}">${TL[t]}</span>`).join('')}</div>`;
+    div.onclick = () => {
+      map.setView([s.la, s.lo], 15);
+      s.marker.openPopup();
+    };
+    list.appendChild(div);
+  });
+
+  if(visible.length && q){
+    map.fitBounds(L.latLngBounds(visible.map(s=>[s.la,s.lo])).pad(0.25));
+  }
+}
+
+$('q').addEventListener('input', apply);
+$('f-ob').addEventListener('change', apply);
+$('f-mdm').addEventListener('change', apply);
+document.querySelectorAll('.typechip').forEach(c => {
+  c.onclick = () => {
+    document.querySelectorAll('.typechip').forEach(x=>x.classList.remove('active'));
+    c.classList.add('active');
+    typeFilter = c.dataset.t;
+    apply();
+  };
+});
+$('locbtn').onclick = () => {
+  if(!navigator.geolocation){ alert('Géolocalisation non disponible.'); return; }
+  $('locbtn').textContent = '⏳…';
+  navigator.geolocation.getCurrentPosition(p => {
+    userPos = [p.coords.latitude, p.coords.longitude];
+    L.circleMarker(userPos,{radius:7,color:'#0a66c2',fillColor:'#0a66c2',fillOpacity:.6})
+      .addTo(map).bindPopup('Vous êtes ici');
+    map.setView(userPos, 11);
+    $('locbtn').textContent = '📍 Près de moi';
+    apply();
+  }, () => {
+    $('locbtn').textContent = '📍 Près de moi';
+    alert("Impossible d'obtenir votre position.");
+  }, {enableHighAccuracy:false, timeout:8000});
+};
+
+apply();
+</script>
+</body>
+</html>
